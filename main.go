@@ -90,82 +90,76 @@ func serveDNS(w dns.ResponseWriter, reqmsg *dns.Msg) {
         }
     }()
 
-    var respmsg *dns.Msg
-    
     if len(reqmsg.Question) != 1 {
-        respmsg = makeErrorReply(dns.RcodeServerFailure, reqmsg) // SERVFAIL
+        sendErrorReply(w, dns.RcodeServerFailure, reqmsg) // SERVFAIL
     } else {
         domain := strings.ToLower(reqmsg.Question[0].Name)
         qtype := reqmsg.Question[0].Qtype
-        respmsg = makeReplyForQuestion(qtype, domain, reqmsg)
-    }
-    
-    err := w.WriteMsg(respmsg)
-    if err != nil {
-        Fprintf(os.Stderr, "error while replying to DNS request: %s", err.Error())
+        sendReply(w, qtype, domain, reqmsg)
     }
 }
 
-func makeReplyForQuestion(qtype uint16, question string, reqmsg *dns.Msg) *dns.Msg {
+func sendReply(w dns.ResponseWriter, qtype uint16, question string, reqmsg *dns.Msg) {
     if question == ourDomain {
-        return makeAReply(ourIP, question, defaultTTL, reqmsg)
+        sendAReply(w, ourIP, question, defaultTTL, reqmsg)
     } else if !strings.HasSuffix(question, "." + ourDomain) {
-        return makeErrorReply(dns.RcodeServerFailure, reqmsg)
-    }
+        sendErrorReply(w, dns.RcodeServerFailure, reqmsg)
+    } else if qtype != dns.TypeA {
+        sendEmptyReply(w, reqmsg)
+    } else {
+        prefix := question[0:len(question)-len(ourDomain)-1]
     
-    if qtype != dns.TypeA {
-        return makeEmptyReply(reqmsg)
-    }
-    
-    prefix := question[0:len(question)-len(ourDomain)-1]
-    
-    if matches := ip_regexp.FindStringSubmatch(prefix); matches != nil {
-        ip := net.ParseIP(matches[1])
-        if ip != nil {
-            return makeAReply(ip, question, defaultTTL, reqmsg)
-        } else {
-            return makeErrorReply(dns.RcodeNameError, reqmsg)
-        }
-    } else if localhost_regexp.MatchString(prefix) {
-        return makeAReply(net.IP{127,0,0,1}, question, defaultTTL, reqmsg)
-    } else if matches := redirect_regexp.FindStringSubmatch(prefix); matches != nil {
-        return makeCNameReply(matches[1], question, reqmsg)
-    } else if matches := rebindGet_regexp.FindStringSubmatch(prefix); matches != nil{
-        key := matches[1]
-        ip := rebinder.Get(key)
-        Printf("rebind get key=%q ip=%q\n", key, ip)
-        if ip != nil {
-            return makeAReply(ip, question, 0, reqmsg)
-        } else {
-            return makeErrorReply(dns.RcodeNameError, reqmsg)
+        if matches := ip_regexp.FindStringSubmatch(prefix); matches != nil {
+            ip := net.ParseIP(matches[1])
+            if ip != nil {
+                sendAReply(w, ip, question, defaultTTL, reqmsg)
+            } else {
+                sendErrorReply(w, dns.RcodeNameError, reqmsg)
+            }
+        } else if localhost_regexp.MatchString(prefix) {
+            sendAReply(w, net.IP{127,0,0,1}, question, defaultTTL, reqmsg)
+        } else if matches := redirect_regexp.FindStringSubmatch(prefix); matches != nil {
+            sendCNameReply(w, matches[1], question, reqmsg)
+        } else if matches := rebindGet_regexp.FindStringSubmatch(prefix); matches != nil{
+            key := matches[1]
+            ip := rebinder.Get(key)
+            Printf("rebind get key=%q ip=%q\n", key, ip)
+            if ip != nil {
+                sendAReply(w, ip, question, 0, reqmsg)
+            } else {
+                sendErrorReply(w, dns.RcodeNameError, reqmsg)
+            }
+            
+        } else if matches := rebindSet_regexp.FindStringSubmatch(prefix); matches != nil {
+            ip := matches[1]
+            key := matches[2]
+            Printf("rebind set key=%q ip=%q\n", key, ip)
+            rebinder.SetCmd(key, ip)
+            sendErrorReply(w, dns.RcodeNameError, reqmsg)
         }
         
-    } else if matches := rebindSet_regexp.FindStringSubmatch(prefix); matches != nil {
-        ip := matches[1]
-        key := matches[2]
-        Printf("rebind set key=%q ip=%q\n", key, ip)
-        rebinder.SetCmd(key, ip)
-        return makeErrorReply(dns.RcodeNameError, reqmsg)
+        sendAReply(w, ourIP, question, defaultTTL, reqmsg)
     }
-    
-    return makeAReply(ourIP, question, defaultTTL, reqmsg)
 }
 
-func makeErrorReply(code int, reqmsg *dns.Msg) *dns.Msg {
+func sendErrorReply(w dns.ResponseWriter, code int, reqmsg *dns.Msg) {
     respmsg := new(dns.Msg)
     respmsg.SetRcode(reqmsg, code)
-    return respmsg
+    
+    Printf("sending error record to %s\n", w.RemoteAddr().String())
+    sendMsg(w, respmsg)
 }
 
-func makeEmptyReply(reqmsg *dns.Msg) *dns.Msg {
+func sendEmptyReply(w dns.ResponseWriter, reqmsg *dns.Msg) {
     respmsg := &dns.Msg{
         Compress: true,
     }
     respmsg.SetReply(reqmsg)
-    return respmsg
+    Printf("sending empty record to %s\n", w.RemoteAddr().String())
+    sendMsg(w, respmsg)
 }
     
-func makeAReply(ip net.IP, question string, ttl uint, reqmsg *dns.Msg) *dns.Msg {
+func sendAReply(w dns.ResponseWriter, ip net.IP, question string, ttl uint, reqmsg *dns.Msg) {
     respmsg := &dns.Msg{
         Compress: true,
     }
@@ -182,11 +176,11 @@ func makeAReply(ip net.IP, question string, ttl uint, reqmsg *dns.Msg) *dns.Msg 
     }
     
     respmsg.Answer = []dns.RR{a_rec}
-    
-    return respmsg
+    Printf("sending A record to %s: question=%q answer=%q ttl=%d\n", w.RemoteAddr().String(), question, ip.String(), ttl)
+    sendMsg(w, respmsg)
 }
 
-func makeCNameReply(cname string, question string, reqmsg *dns.Msg) *dns.Msg {
+func sendCNameReply(w dns.ResponseWriter, cname string, question string, reqmsg *dns.Msg) {
     respmsg := &dns.Msg{
         Compress: true,
     }
@@ -204,5 +198,13 @@ func makeCNameReply(cname string, question string, reqmsg *dns.Msg) *dns.Msg {
     
     respmsg.Answer = []dns.RR{a_rec}
     
-    return respmsg
+    Printf("sending CNAME record to %s: question=%q answer=%q\n", w.RemoteAddr().String(), question, cname)
+    sendMsg(w, respmsg)
+}
+
+func sendMsg(w dns.ResponseWriter, msg *dns.Msg) {
+    err := w.WriteMsg(msg)
+    if err != nil {
+        Fprintf(os.Stderr, "error while replying to DNS request: %s\n", err.Error())
+    }
 }
