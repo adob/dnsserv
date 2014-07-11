@@ -1,6 +1,5 @@
 package main
 
-import . "fmt"
 import (
     "net"
     "os"
@@ -8,6 +7,8 @@ import (
     "regexp"
     "strings"
     "flag"
+    "log"
+    "fmt"
 )
 import "github.com/miekg/dns"
 
@@ -53,20 +54,21 @@ func main() {
     }
     
     if flag.NArg() != 0 {
-        Fprintf(os.Stderr, "too many args provided\n")
+        fmt.Fprintf(os.Stderr, "too many args provided\n")
         flag.PrintDefaults()
         os.Exit(1)
     }
     
     ourIP = net.ParseIP(ourIPString)
     if ourIP == nil {
-        Fprintf(os.Stderr, "Could not parse IP: %q\n", ourIPString)
+        fmt.Fprintf(os.Stderr, "Could not parse IP: %q\n", ourIPString)
         os.Exit(1)
     }
     
+    log.Printf("started")
     err := dns.ListenAndServe(bindAddr, "udp", dns.HandlerFunc(serveDNS))
     if err != nil {
-        Fprintf(os.Stderr, "error while starting server: %s\n", err.Error())
+        log.Fatalf("error while starting server: %s\n", err.Error())
         os.Exit(1)
     }
 }
@@ -74,7 +76,7 @@ func main() {
 func checkRequiredArgs(args ...string) {
     for _, arg := range args {
         if flag.Lookup(arg).Value.String() == "" {
-            Fprintf(os.Stderr, "%s required but not specified\n", arg)
+            fmt.Fprintf(os.Stderr, "%s required but not specified\n", arg)
             flag.PrintDefaults()
             os.Exit(1)
         }
@@ -84,7 +86,7 @@ func checkRequiredArgs(args ...string) {
 func serveDNS(w dns.ResponseWriter, reqmsg *dns.Msg) {
     defer func() {
         if r := recover(); r != nil {
-            Fprintf(os.Stderr, 
+            log.Printf( 
                     "Panicked while serving DNS response.\n" +
                     "  cause: %s\n\n  == stack ==\n%s\n", r, debug.Stack())
         }
@@ -123,7 +125,7 @@ func sendReply(w dns.ResponseWriter, qtype uint16, question string, reqmsg *dns.
         } else if matches := rebindGet_regexp.FindStringSubmatch(prefix); matches != nil{
             key := matches[1]
             ip := rebinder.Get(key)
-            Printf("rebind get key=%q ip=%q\n", key, ip)
+            log.Printf("rebind get key=%q ip=%q\n", key, ip)
             if ip != nil {
                 sendAReply(w, ip, question, 0, reqmsg)
             } else {
@@ -133,7 +135,7 @@ func sendReply(w dns.ResponseWriter, qtype uint16, question string, reqmsg *dns.
         } else if matches := rebindSet_regexp.FindStringSubmatch(prefix); matches != nil {
             ip := matches[1]
             key := matches[2]
-            Printf("rebind set key=%q ip=%q\n", key, ip)
+            log.Printf("rebind set key=%q ip=%q\n", key, ip)
             rebinder.SetCmd(key, ip)
             sendErrorReply(w, dns.RcodeNameError, reqmsg)
         }
@@ -146,7 +148,7 @@ func sendErrorReply(w dns.ResponseWriter, code int, reqmsg *dns.Msg) {
     respmsg := new(dns.Msg)
     respmsg.SetRcode(reqmsg, code)
     
-    Printf("sending error record to %s\n", w.RemoteAddr().String())
+    log.Printf("sending error record to %s\n", w.RemoteAddr().String())
     sendMsg(w, respmsg)
 }
 
@@ -155,7 +157,7 @@ func sendEmptyReply(w dns.ResponseWriter, reqmsg *dns.Msg) {
         Compress: true,
     }
     respmsg.SetReply(reqmsg)
-    Printf("sending empty record to %s\n", w.RemoteAddr().String())
+    log.Printf("sending empty record to %s\n", w.RemoteAddr().String())
     sendMsg(w, respmsg)
 }
     
@@ -176,7 +178,7 @@ func sendAReply(w dns.ResponseWriter, ip net.IP, question string, ttl uint, reqm
     }
     
     respmsg.Answer = []dns.RR{a_rec}
-    Printf("sending A record to %s: question=%q answer=%q ttl=%d\n", w.RemoteAddr().String(), question, ip.String(), ttl)
+    log.Printf("sending A record to %s: question=%q answer=%q id=%d ttl=%d\n", w.RemoteAddr().String(), question, ip.String(), reqmsg.Id, ttl)
     sendMsg(w, respmsg)
 }
 
@@ -198,13 +200,13 @@ func sendCNameReply(w dns.ResponseWriter, cname string, question string, reqmsg 
     
     respmsg.Answer = []dns.RR{a_rec}
     
-    Printf("sending CNAME record to %s: question=%q answer=%q\n", w.RemoteAddr().String(), question, cname)
+    log.Printf("sending CNAME record to %s: question=%q answer=%q id=%d\n", w.RemoteAddr().String(), question, cname, reqmsg.Id)
     sendMsg(w, respmsg)
 }
 
 func sendMsg(w dns.ResponseWriter, msg *dns.Msg) {
     err := w.WriteMsg(msg)
     if err != nil {
-        Fprintf(os.Stderr, "error while replying to DNS request: %s\n", err.Error())
+        log.Printf("error while replying to DNS request: %s\n", err.Error())
     }
 }
