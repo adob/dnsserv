@@ -138,9 +138,9 @@ func sendReply(w dns.ResponseWriter, qtype uint16, question string, reqmsg *dns.
             log.Printf("rebind set key=%q ip=%q\n", key, ip)
             rebinder.SetCmd(key, ip)
             sendErrorReply(w, dns.RcodeNameError, reqmsg)
+        } else {
+            sendAReply(w, ourIP, question, defaultTTL, reqmsg)
         }
-        
-        sendAReply(w, ourIP, question, defaultTTL, reqmsg)
     }
 }
 
