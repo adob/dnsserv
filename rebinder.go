@@ -1,3 +1,4 @@
+//package dnsserve
 package main
 
 import (
@@ -55,3 +56,4 @@ func (rb *Rebinder) Get(key string) net.IP {
         return nil
     }
 }
+

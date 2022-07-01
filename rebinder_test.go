@@ -1,3 +1,4 @@
+//package dnsserve
 package main
 
 import (

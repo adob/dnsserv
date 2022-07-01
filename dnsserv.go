@@ -11,6 +11,7 @@ import (
     "fmt"
 )
 import "github.com/miekg/dns"
+//import "github.com/adob/dnsserv"
 
 var ip_regexp = regexp.MustCompile(
     `^(?:[a-z0-9-]+\.)*`+
@@ -37,6 +38,7 @@ var ourIPString = ""
 var ourIP net.IP
 var defaultTTL uint = 1800
 var bindAddr string = "0.0.0.0:domain"
+var txtMsg = ""
 
 var rebinder = NewRebinder()
 
@@ -45,6 +47,7 @@ func main() {
     flag.StringVar(&ourIPString, "ip", ourIPString, "IP to resolve to")
     flag.UintVar(&defaultTTL, "ttl", defaultTTL, "default ttl")
     flag.StringVar(&bindAddr, "addr", bindAddr, "interface and port to bind to")
+    flag.StringVar(&txtMsg, "txt", txtMsg, "String to in include in TXT records")
     flag.Parse()
     
     checkRequiredArgs("domain", "ip")
@@ -93,7 +96,7 @@ func serveDNS(w dns.ResponseWriter, reqmsg *dns.Msg) {
     }()
 
     if len(reqmsg.Question) != 1 {
-        sendErrorReply(w, dns.RcodeServerFailure, reqmsg) // SERVFAIL
+        sendErrorReply(w, dns.RcodeServerFailure, "?", reqmsg) // SERVFAIL
     } else {
         domain := strings.ToLower(reqmsg.Question[0].Name)
         qtype := reqmsg.Question[0].Qtype
@@ -102,10 +105,12 @@ func serveDNS(w dns.ResponseWriter, reqmsg *dns.Msg) {
 }
 
 func sendReply(w dns.ResponseWriter, qtype uint16, question string, reqmsg *dns.Msg) {
-    if question == ourDomain {
+    if qtype == dns.TypeTXT {
+        sendTXTReply(w, question, reqmsg)
+    } else if question == ourDomain {
         sendAReply(w, ourIP, question, defaultTTL, reqmsg)
     } else if !strings.HasSuffix(question, "." + ourDomain) {
-        sendErrorReply(w, dns.RcodeServerFailure, reqmsg)
+        sendErrorReply(w, dns.RcodeServerFailure, question, reqmsg)
     } else if qtype != dns.TypeA {
         sendEmptyReply(w, reqmsg)
     } else {
@@ -116,7 +121,7 @@ func sendReply(w dns.ResponseWriter, qtype uint16, question string, reqmsg *dns.
             if ip != nil {
                 sendAReply(w, ip, question, defaultTTL, reqmsg)
             } else {
-                sendErrorReply(w, dns.RcodeNameError, reqmsg)
+                sendErrorReply(w, dns.RcodeNameError, question, reqmsg)
             }
         } else if localhost_regexp.MatchString(prefix) {
             sendAReply(w, net.IP{127,0,0,1}, question, defaultTTL, reqmsg)
@@ -129,7 +134,7 @@ func sendReply(w dns.ResponseWriter, qtype uint16, question string, reqmsg *dns.
             if ip != nil {
                 sendAReply(w, ip, question, 0, reqmsg)
             } else {
-                sendErrorReply(w, dns.RcodeNameError, reqmsg)
+                sendErrorReply(w, dns.RcodeNameError, question, reqmsg)
             }
             
         } else if matches := rebindSet_regexp.FindStringSubmatch(prefix); matches != nil {
@@ -137,18 +142,20 @@ func sendReply(w dns.ResponseWriter, qtype uint16, question string, reqmsg *dns.
             key := matches[2]
             log.Printf("rebind set key=%q ip=%q\n", key, ip)
             rebinder.SetCmd(key, ip)
-            sendErrorReply(w, dns.RcodeNameError, reqmsg)
-        } else {
+            sendErrorReply(w, dns.RcodeNameError, question, reqmsg)
+        } else if strings.HasPrefix(prefix, "html") {
+            sendCNameReply(w, "<foo>.util.adobkin.name.", question, reqmsg)
+	} else {
             sendAReply(w, ourIP, question, defaultTTL, reqmsg)
         }
     }
 }
 
-func sendErrorReply(w dns.ResponseWriter, code int, reqmsg *dns.Msg) {
+func sendErrorReply(w dns.ResponseWriter, code int, question string, reqmsg *dns.Msg) {
     respmsg := new(dns.Msg)
     respmsg.SetRcode(reqmsg, code)
     
-    log.Printf("sending error record to %s\n", w.RemoteAddr().String())
+    log.Printf("sending error record to %s for question %s\n", w.RemoteAddr().String(), question)
     sendMsg(w, respmsg)
 }
 
@@ -201,6 +208,28 @@ func sendCNameReply(w dns.ResponseWriter, cname string, question string, reqmsg 
     respmsg.Answer = []dns.RR{a_rec}
     
     log.Printf("sending CNAME record to %s: question=%q answer=%q id=%d\n", w.RemoteAddr().String(), question, cname, reqmsg.Id)
+    sendMsg(w, respmsg)
+}
+
+func sendTXTReply(w dns.ResponseWriter, question string, reqmsg *dns.Msg) {
+    respmsg := &dns.Msg{
+        Compress: true,
+    }
+    respmsg.SetReply(reqmsg)
+
+    txt_rec := &dns.TXT{
+        Hdr: dns.RR_Header{
+            Name: question,
+            Rrtype: dns.TypeTXT,
+            Class:  dns.ClassINET,
+            Ttl:    uint32(defaultTTL),
+        },
+        Txt: []string{txtMsg},
+    }
+
+    respmsg.Answer = []dns.RR{txt_rec}
+
+    log.Printf("sending TXT record to %s: id=%d\n", w.RemoteAddr().String(), reqmsg.Id)
     sendMsg(w, respmsg)
 }
 
